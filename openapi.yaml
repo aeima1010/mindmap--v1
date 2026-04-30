@@ -1,0 +1,39 @@
+openapi: 3.0.0
+info:
+  title: zMind Generator API
+  description: 这是一个专门为 Coze 打造的思维导图生成器插件，可以将 Markdown 格式的节点文本转化为精美的可视化 PNG 图片。
+  version: 1.0.0
+servers:
+  - url: https://dmind-api.vercel.app
+paths:
+  /generate:
+    post:
+      summary: 生成思维导图
+      operationId: generateMindmap
+      description: 传入 Markdown 文本，返回思维导图图片的 Base64 数据。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - markdown_text
+              properties:
+                markdown_text:
+                  type: string
+                  description: 包含层级结构的 Markdown 文本，例如 "# 根节点\n## 子节点"
+      responses:
+        '200':
+          description: 生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  image_base64:
+                    type: string
+                    description: 包含 Data URI前缀的完整 Base64 图片字符串，可直接作为 Markdown 图片展示。
+                  message:
+                    type: string
+                    description: 状态信息
