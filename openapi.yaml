@@ -4,7 +4,7 @@ info:
   description: 这是一个专门为 Coze 打造的思维导图生成器插件，可以将 Markdown 格式的节点文本转化为精美的可视化 PNG 图片。
   version: 1.0.0
 servers:
-  - url: https://dmind-api.vercel.app
+  - url: https://mindmap-v1.vercel.app
 paths:
   /generate:
     post:
