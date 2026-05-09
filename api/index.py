@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import matplotlib.path as mpath
@@ -131,7 +131,7 @@ def read_root():
         }
     }
 
-@app.post("/generate", response_model=MindmapResponse)
+@app.post("/generate")
 def generate_mindmap(req: MindmapRequest):
     try:
         root_node = parse_markdown(req.markdown_text)
@@ -163,8 +163,7 @@ def generate_mindmap(req: MindmapRequest):
         plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
         plt.close(fig)
         buf.seek(0)
-        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
         
-        return MindmapResponse(image_base64=f"data:image/png;base64,{img_base64}", message="success")
+        return Response(content=buf.read(), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
