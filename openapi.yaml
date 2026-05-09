@@ -25,15 +25,9 @@ paths:
                   description: 包含层级结构的 Markdown 文本，例如 "# 根节点\n## 子节点"
       responses:
         '200':
-          description: 生成成功
+          description: 生成成功，直接返回原生图片
           content:
-            application/json:
+            image/png:
               schema:
-                type: object
-                properties:
-                  image_base64:
-                    type: string
-                    description: 包含 Data URI前缀的完整 Base64 图片字符串，可直接作为 Markdown 图片展示。
-                  message:
-                    type: string
-                    description: 状态信息
+                type: string
+                format: binary
