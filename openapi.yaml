@@ -34,6 +34,29 @@ paths:
                   image_base64:
                     type: string
                     description: 包含 Data URI前缀的完整 Base64 图片字符串，可直接作为 Markdown 图片展示。
+                  image_url:
+                    type: string
+                    description: 动态生成的思维导图原生 PNG 图片的公共 URL，可以直接用作文件或图片节点输入。
                   message:
                     type: string
                     description: 状态信息
+  /render:
+    get:
+      summary: 获取原生思维导图图片
+      operationId: renderMindmap
+      description: 传入 Markdown 文本作为查询参数，直接返回原生 image/png 二进制图片数据，此链接可直接作为 URL 使用。
+      parameters:
+        - name: markdown
+          in: query
+          required: true
+          schema:
+            type: string
+          description: url-encoded 格式的 Markdown 文本
+      responses:
+        '200':
+          description: 直接返回原生图片
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary

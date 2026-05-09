@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import matplotlib.path as mpath
@@ -9,6 +9,7 @@ import re
 import io
 import base64
 import os
+import urllib.parse
 from fastapi.middleware.cors import CORSMiddleware
 
 # 动态加载中文字体，确保在 Vercel 或 Serverless 环境中渲染不出错
@@ -38,6 +39,7 @@ class MindmapRequest(BaseModel):
 
 class MindmapResponse(BaseModel):
     image_base64: str
+    image_url: str
     message: str
 
 def wrap_text(text, limit=18):
@@ -131,40 +133,54 @@ def read_root():
         }
     }
 
+def generate_image_buf(md_text):
+    root_node = parse_markdown(md_text)
+    if not isinstance(root_node, dict): raise ValueError("无效的 Markdown 格式")
+        
+    root_node["level"] = 0
+    root_node["wrapped_text"] = wrap_text(root_node["text"], 22)
+    root_node, total_height = layout_tree(root_node, parent_x=0)
+    set_colors(root_node)
+    
+    fig, ax = plt.subplots(figsize=(18, max(10, total_height * 0.7)))
+    fig.patch.set_facecolor('#F2F2F2')
+    ax.set_facecolor('#F2F2F2')
+    draw_tree(ax, root_node)
+    
+    all_x, all_y = [] , []
+    def collect_coords(n):
+        all_x.extend([n["x"], n["x"] + n["width"]])
+        all_y.append(n["y"])
+        for c in n.get("children", []): collect_coords(c)
+    collect_coords(root_node)
+    
+    ax.set_xlim(min(all_x) - 1.5, max(all_x) + 3.0)
+    ax.set_ylim(max(all_y) + 1.5, min(all_y) - 1.5)
+    ax.axis("off")
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+@app.get("/render")
+def render_mindmap(markdown: str):
+    try:
+        buf = generate_image_buf(markdown)
+        return Response(content=buf.read(), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/generate", response_model=MindmapResponse)
 def generate_mindmap(req: MindmapRequest):
     try:
-        root_node = parse_markdown(req.markdown_text)
-        if not isinstance(root_node, dict): raise ValueError("无效的 Markdown 格式")
-            
-        root_node["level"] = 0
-        root_node["wrapped_text"] = wrap_text(root_node["text"], 22)
-        root_node, total_height = layout_tree(root_node, parent_x=0)
-        set_colors(root_node)
-        
-        fig, ax = plt.subplots(figsize=(18, max(10, total_height * 0.7)))
-        fig.patch.set_facecolor('#F2F2F2')
-        ax.set_facecolor('#F2F2F2')
-        draw_tree(ax, root_node)
-        
-        all_x, all_y = [], []
-        def collect_coords(n):
-            all_x.extend([n["x"], n["x"] + n["width"]])
-            all_y.append(n["y"])
-            for c in n.get("children", []): collect_coords(c)
-        collect_coords(root_node)
-        
-        ax.set_xlim(min(all_x) - 1.5, max(all_x) + 3.0)
-        ax.set_ylim(max(all_y) + 1.5, min(all_y) - 1.5)
-        ax.axis("off")
-        plt.tight_layout()
-        
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
-        plt.close(fig)
-        buf.seek(0)
+        buf = generate_image_buf(req.markdown_text)
         img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        encoded_markdown = urllib.parse.quote(req.markdown_text)
+        image_url = f"https://dmindmap.zeabur.app/render?markdown={encoded_markdown}"
         
-        return MindmapResponse(image_base64=f"data:image/png;base64,{img_base64}", message="success")
+        return MindmapResponse(image_base64=f"data:image/png;base64,{img_base64}", image_url=image_url, message="success")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
