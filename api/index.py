@@ -11,6 +11,8 @@ import matplotlib.patches as mpatches
 from matplotlib import font_manager
 import networkx as nx
 import re
+import json
+import base64
 import io
 import uuid
 import urllib.parse
@@ -50,6 +52,10 @@ class MindmapRequest(BaseModel):
         "jpeg",
         description="输出图片格式，支持 jpeg、jpg、jepg、png；默认 jpeg",
     )
+    include_image_base64: bool = Field(
+        True,
+        description="为 true 时在 image_base64 中返回 data:image/jpeg 或 data:image/png 的 Data URI，便于 Coze 工作流直接作为图片文件使用；为 false 时该字段为空字符串以减小响应体",
+    )
 
 class DataStruct(BaseModel):
     jump_link: str = Field(description="在线编辑或跳转链接；未配置时为空字符串")
@@ -64,6 +70,13 @@ class MindmapPluginResponse(BaseModel):
     msg: str = "success"
     status_code: int = 0
     type_for_model: int = 2
+    # 兼容早期仅映射下列根字段的 Coze 工具配置（与 data_struct.pic / msg 同源）
+    image_url: str = Field("", description="与 data_struct.pic 相同，便于旧输出映射")
+    message: str = Field("", description="与 msg 相同，便于旧输出映射（旧版常用字段名 message）")
+    image_base64: str = Field(
+        "",
+        description="请求 include_image_base64 为 true 时为完整 Data URI；否则为空字符串",
+    )
 
 def _public_base_url() -> str:
     return os.getenv("PUBLIC_BASE_URL", "https://dmindmap.zeabur.app").rstrip("/")
@@ -76,6 +89,66 @@ def _make_log_id() -> str:
 def _env_jump_link() -> str:
     return (os.getenv("MINDMAP_JUMP_LINK") or "").strip()
 
+def _unwrap_markdown_text(text: str) -> str:
+    """若上游误把整段 JSON 放进 markdown_text（如 Coze/LLM 输出 {\"image\": \"# ...\"}），取出内层 Markdown。"""
+    text = (text or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            for key in ("image", "markdown", "markdown_text", "content", "mindmap_md"):
+                v = obj.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # LLM 常产出「伪 JSON」：字符串里带真实换行，标准 json.loads 无法解析
+    loose = _unwrap_loose_image_object(text)
+    if loose is not None:
+        return loose
+    return text
+
+
+def _unwrap_loose_image_object(text: str) -> Optional[str]:
+    """解析形如 {\"image\": \"# 行1\\n真实换行## 行2\" } 的非严格 JSON（值内可有字面换行）。"""
+    m = re.match(
+        r'^\s*\{\s*"(image|markdown|markdown_text|content|mindmap_md)"\s*:\s*"',
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    value_start = m.end()
+    end = re.search(r'"\s*\}\s*$', text[value_start:])
+    if not end:
+        return None
+    inner = text[value_start : value_start + end.start()]
+    return _unescape_json_string_fragment(inner).strip()
+
+
+def _unescape_json_string_fragment(s: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == "r":
+                out.append("\r")
+            elif nxt in '"\\':
+                out.append(nxt)
+            else:
+                out.append(s[i : i + 2])
+            i += 2
+            continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
 def _normalize_image_format(image_format: Optional[str]) -> str:
     fmt = (image_format or "jpeg").lower().strip().lstrip(".")
     if fmt in {"jpg", "jpeg", "jepg"}:
@@ -86,6 +159,12 @@ def _normalize_image_format(image_format: Optional[str]) -> str:
 
 def _image_media_type(image_format: str) -> str:
     return "image/jpeg" if image_format == "jpeg" else "image/png"
+
+
+def _data_uri_for_bytes(image_format: str, raw: bytes) -> str:
+    mime = "image/jpeg" if image_format == "jpeg" else "image/png"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
 
 def _build_data_markdown(pic: str, jump_link: str) -> str:
     lines = [f"![返回图片]({pic})"]
@@ -245,10 +324,12 @@ def render_mindmap_with_format(image_format: str, markdown: str):
 @app.post("/generate", response_model=MindmapPluginResponse)
 def generate_mindmap(req: MindmapRequest):
     try:
+        markdown_text = _unwrap_markdown_text(req.markdown_text)
         image_format = _normalize_image_format(req.image_format)
-        buf = generate_image_buf(req.markdown_text, image_format)
-        buf.read()  # 渲染校验通过；图片以 URL 形式提供，与生产插件一致
-        encoded_markdown = urllib.parse.quote(req.markdown_text)
+        buf = generate_image_buf(markdown_text, image_format)
+        raw = buf.read()
+        image_base64 = _data_uri_for_bytes(image_format, raw) if req.include_image_base64 else ""
+        encoded_markdown = urllib.parse.quote(markdown_text)
         base = _public_base_url()
         pic = f"{base}/render.{image_format}?markdown={encoded_markdown}"
         jump = (req.jump_link or _env_jump_link() or "").strip()
@@ -261,6 +342,9 @@ def generate_mindmap(req: MindmapRequest):
             msg="success",
             status_code=0,
             type_for_model=2,
+            image_url=pic,
+            message="success",
+            image_base64=image_base64,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

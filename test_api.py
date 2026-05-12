@@ -1,4 +1,5 @@
 import os
+import base64
 from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
@@ -61,6 +62,9 @@ def run():
     assert payload["code"] == 0 and payload["status_code"] == 0 and payload["type_for_model"] == 2
     assert "data_struct" in payload and payload["data_struct"]["jump_link"] == "https://example.com/edit-demo"
     assert "[编辑](https://example.com/edit-demo)" in payload["data"]
+    assert payload["image_base64"].startswith("data:image/jpeg;base64,")
+    b64part = payload["image_base64"].split(",", 1)[1]
+    assert base64.b64decode(b64part)[:2] == b"\xff\xd8"
     pic = payload["data_struct"]["pic"]
     parsed = urlparse(pic)
     assert parsed.path.endswith("/render.jpeg")
@@ -111,6 +115,16 @@ def run():
         },
     )
     assert bad_format_res.status_code == 400
+
+    no_b64_res = client.post(
+        "/generate",
+        json={
+            "markdown_text": "# 根\n## 子",
+            "include_image_base64": False,
+        },
+    )
+    assert no_b64_res.status_code == 200
+    assert no_b64_res.json()["image_base64"] == ""
 
     # 直接调用路由函数
     req = MindmapRequest(markdown_text=markdown_data, jump_link="https://example.com/edit-demo", image_format="jepg")

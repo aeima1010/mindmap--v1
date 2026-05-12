@@ -10,7 +10,7 @@ paths:
     post:
       summary: 生成思维导图
       operationId: generateMindmap
-      description: 传入 Markdown 文本，返回与生产插件一致的 JSON（含 Markdown 文案、图片 URL、可选编辑跳转）。
+      description: 传入 Markdown 文本，返回 JSON：默认含 JPEG（或 PNG）的 Data URI（image_base64），便于工作流直接接文件；同时返回图片 URL 等字段。
       requestBody:
         required: true
         content:
@@ -22,7 +22,9 @@ paths:
               properties:
                 markdown_text:
                   type: string
-                  description: 包含层级结构的 Markdown 文本，例如 "# 根节点\n## 子节点"
+                  description: |
+                    思维导图层级 Markdown（# 标题、## 子节点…）。
+                    若上游误传 JSON 字符串（如 {"image":"# 根\n## 子…"}），服务端会尝试解析并取 image / markdown 等字段内的正文再渲染。
                 jump_link:
                   type: string
                   description: 可选。在线编辑页完整 URL；不传则使用服务端环境变量 MINDMAP_JUMP_LINK；均未配置时 data 中不含「编辑」链接。
@@ -34,7 +36,13 @@ paths:
                     - jepg
                     - png
                   default: jpeg
-                  description: 输出图片格式；默认生成 JPEG。兼容 jepg 拼写，JSON 中的 data_struct.pic 会指向对应格式的真实图片 URL。
+                  description: 输出图片格式；默认 jpeg。工作流要 JPEG 文件时保持默认即可。
+                include_image_base64:
+                  type: boolean
+                  default: true
+                  description: |
+                    为 true（默认）时，响应中 image_base64 为 data:image/jpeg;base64,... 或 PNG 的 Data URI，便于 Coze 工作流「文件 / 图片」节点直接使用。
+                    为 false 时 image_base64 为空字符串，仅使用 data_struct.pic 等 URL，以减小响应体。
       responses:
         '200':
           description: 生成成功
@@ -84,3 +92,14 @@ paths:
                     type: integer
                     description: 模型侧类型标识
                     example: 2
+                  image_url:
+                    type: string
+                    description: 与 data_struct.pic 相同；若 Coze 仍绑定旧字段名 image_url，请映射此项。
+                  message:
+                    type: string
+                    description: 与 msg 相同；若工具输出仍绑定 message，请映射此项。
+                  image_base64:
+                    type: string
+                    description: |
+                      默认（请求中 include_image_base64 为 true）为完整 Data URI，如 data:image/jpeg;base64,...，与工作流图片文件输入兼容。
+                      include_image_base64 为 false 时为空字符串。

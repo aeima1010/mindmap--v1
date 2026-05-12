@@ -27,18 +27,27 @@ Vercel 对 Python FastAPI 的 Serverless 部署支持最好。
 1. **创建插件**：在 Coze 工作台中，选择“创建插件” -> “基于 OpenAPI 创建”。
 2. **导入 Schema**：将本目录下的 `openapi.yaml` 文件的内容复制粘贴到配置框中。
 3. **配置服务器 URL**：将 `openapi.yaml` 中 `servers` 下的 url 替换为你部署成功后的真实 URL（例如 `https://dmind-api.vercel.app`）。
-4. **测试调用**：在调试界面输入一段 Markdown，验证它是否返回生产兼容 JSON：`code`、`data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`。
+4. **测试调用**：验证返回含 `image_base64`（默认即 JPEG 的 Data URI，便于工作流接文件）、`data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`，以及兼容字段 `image_url`、`message`。
 5. **Prompt 设定**：在 Coze Bot 的提示词中，告知 AI（火山引擎）：
-   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。插件会返回 `data` 字段，请直接将 `data` 内容展示给用户；`data_struct.pic` 是 PNG/JPEG 图片 URL，`data_struct.jump_link` 是可选编辑链接。”*
+   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。工作流需要图片文件时，使用响应里的 `image_base64`（默认即为 JPEG 的 Data URI）；展示用可直接输出 `data` 字段；外链图片用 `data_struct.pic` 或 `image_url`。”*
 
 ## 图片输出方式
-- Coze 插件底层调用 `/generate`，响应必须是 JSON；因此真实图片通过 JSON 中的 `data_struct.pic` 返回。
-- 默认生成 JPEG 图片 URL，例如 `/render.jpeg?markdown=...`；也兼容请求体中传 `image_format: "jepg"`，最终会归一化为标准 JPEG。
-- 如需 PNG，可以在请求体中传 `image_format: "png"`，生成 `/render.png?markdown=...`。
+- Coze 插件底层调用 `/generate`，响应为 JSON。
+- **工作流里要「直接输出 JPEG 文件」**：保持默认即可——`image_format` 默认为 `jpeg`，`include_image_base64` 默认为 `true`，响应里的 **`image_base64`** 为 `data:image/jpeg;base64,...`，可接到工作流的图片/文件节点；同时仍有 **`data_struct.pic` / `image_url`** 供外链展示。
+- 若只想要 URL、不要大体积 Base64，在请求体中传 **`include_image_base64: false`**。
+- 图片 URL 形如 `/render.jpeg?markdown=...`；请求体里也可传 `image_format: "jepg"`，会归一化为 JPEG。
+- 如需 PNG，传 `image_format: "png"`，此时 `image_base64` 前缀为 `data:image/png;base64,...`。
 - 旧的 `/render?markdown=...` 入口仍保留，默认返回 `image/jpeg`。
 
 ## 环境变量
 - `PUBLIC_BASE_URL`: 对外可访问的服务地址，用于生成 `data_struct.pic` 图片 URL，默认 `https://dmindmap.zeabur.app`。
 - `MINDMAP_JUMP_LINK`: 默认编辑链接；请求体里的 `jump_link` 优先级更高。未配置时，返回结构仍保留 `data_struct.jump_link`，值为空字符串。
+
+## Coze 试运行里 Response 显示 `{}` 时怎么排查
+
+1. **`jump_link` 为空不会导致 `{}`**。空链接时仍会返回完整 JSON，只是没有「编辑」链接相关文案。
+2. **先看「请求 / 原始响应」**：确认 HTTP 200，且 Body 里是否已有 `code`、`data`、`data_struct` 等。若原始 Body 正常、只有摘要区是 `{}`，多半是 **工具「输出参数」与响应字段名不一致**（例如仍绑定旧的 `image_url`、`message`，而接口只返回了新字段名）。
+3. **处理办法**：在插件里用最新 `openapi.yaml` **重新导入/同步**该工具；或在工具的输出映射里绑定：`data`、`data_struct.pic`，或根字段 **`image_url`**、**`message`**（与 `pic` / `msg` 同源，专为兼容旧配置）。
+4. **部署与 Schema 一致**：Coze 里填的 Base URL 必须指向已部署当前代码的实例；若线上仍是旧接口，字段对不上也会出现空映射。
 
 这样，用户就可以在 Coze 的对话流中直接看到渲染好的精美图片了！
