@@ -1,5 +1,10 @@
 from fastapi import FastAPI, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+import os
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp")
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.path as mpath
 import matplotlib.patches as mpatches
@@ -7,9 +12,10 @@ from matplotlib import font_manager
 import networkx as nx
 import re
 import io
-import base64
-import os
+import uuid
 import urllib.parse
+from datetime import datetime
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 # 动态加载中文字体，确保在 Vercel 或 Serverless 环境中渲染不出错
@@ -36,11 +42,63 @@ app.add_middleware(
 
 class MindmapRequest(BaseModel):
     markdown_text: str
+    jump_link: Optional[str] = Field(
+        None,
+        description="可选。在线编辑页完整 URL；未传则读环境变量 MINDMAP_JUMP_LINK（均可为空）",
+    )
+    image_format: Optional[str] = Field(
+        "jpeg",
+        description="输出图片格式，支持 jpeg、jpg、jepg、png；默认 jpeg",
+    )
 
-class MindmapResponse(BaseModel):
-    image_base64: str
-    image_url: str
-    message: str
+class DataStruct(BaseModel):
+    jump_link: str = Field(description="在线编辑或跳转链接；未配置时为空字符串")
+    pic: str = Field(description="思维导图图片可直接访问的 URL")
+
+class MindmapPluginResponse(BaseModel):
+    """与生产环境（如树图类插件）一致的插件返回结构，便于 Coze 等渠道直接消费。"""
+    code: int = 0
+    data: str = Field(description="含 Markdown 图片与说明文案，可直接展示给用户")
+    data_struct: DataStruct
+    log_id: str
+    msg: str = "success"
+    status_code: int = 0
+    type_for_model: int = 2
+
+def _public_base_url() -> str:
+    return os.getenv("PUBLIC_BASE_URL", "https://dmindmap.zeabur.app").rstrip("/")
+
+def _make_log_id() -> str:
+    ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    suffix = uuid.uuid4().hex[:20].upper()
+    return f"{ts}{suffix}"
+
+def _env_jump_link() -> str:
+    return (os.getenv("MINDMAP_JUMP_LINK") or "").strip()
+
+def _normalize_image_format(image_format: Optional[str]) -> str:
+    fmt = (image_format or "jpeg").lower().strip().lstrip(".")
+    if fmt in {"jpg", "jpeg", "jepg"}:
+        return "jpeg"
+    if fmt == "png":
+        return "png"
+    raise ValueError("image_format 仅支持 jpeg、jpg、jepg、png")
+
+def _image_media_type(image_format: str) -> str:
+    return "image/jpeg" if image_format == "jpeg" else "image/png"
+
+def _build_data_markdown(pic: str, jump_link: str) -> str:
+    lines = [f"![返回图片]({pic})"]
+    if jump_link:
+        lines.extend([
+            "",
+            f"[编辑]({jump_link})",
+            "",
+            "如果觉得这个思维导图还不够完美，或者你的想法需要更自由地表达，点击编辑按钮，将你的思维导图变形、变色、变内容、甚至可以添加新的元素，快来试试吧！。",
+        ])
+    else:
+        lines.extend(["", "以下为根据你的内容自动生成的思维导图图片。"])
+    return "\n".join(lines) + "\n"
 
 def wrap_text(text, limit=18):
     if len(text) <= limit: return text
@@ -133,7 +191,8 @@ def read_root():
         }
     }
 
-def generate_image_buf(md_text):
+def generate_image_buf(md_text, image_format="jpeg"):
+    image_format = _normalize_image_format(image_format)
     root_node = parse_markdown(md_text)
     if not isinstance(root_node, dict): raise ValueError("无效的 Markdown 格式")
         
@@ -160,27 +219,50 @@ def generate_image_buf(md_text):
     plt.tight_layout()
     
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.savefig(buf, format=image_format, dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
     return buf
 
-@app.get("/render")
-def render_mindmap(markdown: str):
+def _render_image_response(markdown: str, image_format: str):
     try:
-        buf = generate_image_buf(markdown)
-        return Response(content=buf.read(), media_type="image/png")
+        fmt = _normalize_image_format(image_format)
+        buf = generate_image_buf(markdown, fmt)
+        return Response(content=buf.read(), media_type=_image_media_type(fmt))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/generate", response_model=MindmapResponse)
+@app.get("/render")
+def render_mindmap(markdown: str, image_format: str = "jpeg"):
+    return _render_image_response(markdown, image_format)
+
+@app.get("/render.{image_format}")
+def render_mindmap_with_format(image_format: str, markdown: str):
+    return _render_image_response(markdown, image_format)
+
+@app.post("/generate", response_model=MindmapPluginResponse)
 def generate_mindmap(req: MindmapRequest):
     try:
-        buf = generate_image_buf(req.markdown_text)
-        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        image_format = _normalize_image_format(req.image_format)
+        buf = generate_image_buf(req.markdown_text, image_format)
+        buf.read()  # 渲染校验通过；图片以 URL 形式提供，与生产插件一致
         encoded_markdown = urllib.parse.quote(req.markdown_text)
-        image_url = f"https://dmindmap.zeabur.app/render?markdown={encoded_markdown}"
-        
-        return MindmapResponse(image_base64=f"data:image/png;base64,{img_base64}", image_url=image_url, message="success")
+        base = _public_base_url()
+        pic = f"{base}/render.{image_format}?markdown={encoded_markdown}"
+        jump = (req.jump_link or _env_jump_link() or "").strip()
+        data = _build_data_markdown(pic, jump)
+        return MindmapPluginResponse(
+            code=0,
+            data=data,
+            data_struct=DataStruct(jump_link=jump, pic=pic),
+            log_id=_make_log_id(),
+            msg="success",
+            status_code=0,
+            type_for_model=2,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

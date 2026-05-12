@@ -10,7 +10,7 @@ paths:
     post:
       summary: 生成思维导图
       operationId: generateMindmap
-      description: 传入 Markdown 文本，返回思维导图图片的 Base64 数据。
+      description: 传入 Markdown 文本，返回与生产插件一致的 JSON（含 Markdown 文案、图片 URL、可选编辑跳转）。
       requestBody:
         required: true
         content:
@@ -23,6 +23,18 @@ paths:
                 markdown_text:
                   type: string
                   description: 包含层级结构的 Markdown 文本，例如 "# 根节点\n## 子节点"
+                jump_link:
+                  type: string
+                  description: 可选。在线编辑页完整 URL；不传则使用服务端环境变量 MINDMAP_JUMP_LINK；均未配置时 data 中不含「编辑」链接。
+                image_format:
+                  type: string
+                  enum:
+                    - jpeg
+                    - jpg
+                    - jepg
+                    - png
+                  default: jpeg
+                  description: 输出图片格式；默认生成 JPEG。兼容 jepg 拼写，JSON 中的 data_struct.pic 会指向对应格式的真实图片 URL。
       responses:
         '200':
           description: 生成成功
@@ -30,13 +42,45 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - code
+                  - data
+                  - data_struct
+                  - log_id
+                  - msg
+                  - status_code
+                  - type_for_model
                 properties:
-                  image_base64:
+                  code:
+                    type: integer
+                    description: 业务码，成功为 0
+                    example: 0
+                  data:
                     type: string
-                    description: 包含 Data URI前缀的完整 Base64 图片字符串，可直接作为 Markdown 图片展示。
-                  image_url:
+                    description: Markdown 字符串（含图片与说明），可直接展示
+                  data_struct:
+                    type: object
+                    required:
+                      - jump_link
+                      - pic
+                    properties:
+                      jump_link:
+                        type: string
+                        description: 编辑/跳转链接；未配置时为空字符串
+                      pic:
+                        type: string
+                        description: 思维导图图片 URL，默认 JPEG，也可通过 image_format 生成 PNG。
+                  log_id:
                     type: string
-                    description: 动态生成的思维导图原生 PNG 图片的公共 URL，可以直接用作文件或图片节点输入。
-                  message:
+                    description: 请求追踪 ID
+                  msg:
                     type: string
-                    description: 状态信息
+                    example: success
+                  status_code:
+                    type: integer
+                    description: 状态码，成功为 0
+                    example: 0
+                  type_for_model:
+                    type: integer
+                    description: 模型侧类型标识
+                    example: 2
