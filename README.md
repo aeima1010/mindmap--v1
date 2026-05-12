@@ -27,8 +27,18 @@ Vercel 对 Python FastAPI 的 Serverless 部署支持最好。
 1. **创建插件**：在 Coze 工作台中，选择“创建插件” -> “基于 OpenAPI 创建”。
 2. **导入 Schema**：将本目录下的 `openapi.yaml` 文件的内容复制粘贴到配置框中。
 3. **配置服务器 URL**：将 `openapi.yaml` 中 `servers` 下的 url 替换为你部署成功后的真实 URL（例如 `https://dmind-api.vercel.app`）。
-4. **测试调用**：在调试界面输入一段 Markdown，验证它是否返回了 Base64 格式的图片数据。
+4. **测试调用**：在调试界面输入一段 Markdown，验证它是否返回生产兼容 JSON：`code`、`data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`。
 5. **Prompt 设定**：在 Coze Bot 的提示词中，告知 AI（火山引擎）：
-   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。插件会返回一个 image_base64 字段，请直接使用 Markdown 图片语法输出展示结果：`![思维导图]({image_base64})`”*
+   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。插件会返回 `data` 字段，请直接将 `data` 内容展示给用户；`data_struct.pic` 是 PNG/JPEG 图片 URL，`data_struct.jump_link` 是可选编辑链接。”*
+
+## 图片输出方式
+- Coze 插件底层调用 `/generate`，响应必须是 JSON；因此真实图片通过 JSON 中的 `data_struct.pic` 返回。
+- 默认生成 JPEG 图片 URL，例如 `/render.jpeg?markdown=...`；也兼容请求体中传 `image_format: "jepg"`，最终会归一化为标准 JPEG。
+- 如需 PNG，可以在请求体中传 `image_format: "png"`，生成 `/render.png?markdown=...`。
+- 旧的 `/render?markdown=...` 入口仍保留，默认返回 `image/jpeg`。
+
+## 环境变量
+- `PUBLIC_BASE_URL`: 对外可访问的服务地址，用于生成 `data_struct.pic` 图片 URL，默认 `https://dmindmap.zeabur.app`。
+- `MINDMAP_JUMP_LINK`: 默认编辑链接；请求体里的 `jump_link` 优先级更高。未配置时，返回结构仍保留 `data_struct.jump_link`，值为空字符串。
 
 这样，用户就可以在 Coze 的对话流中直接看到渲染好的精美图片了！
