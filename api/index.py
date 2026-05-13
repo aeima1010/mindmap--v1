@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import os
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -15,7 +16,7 @@ import json
 import base64
 import io
 import uuid
-import urllib.parse
+from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,12 @@ from fastapi.middleware.cors import CORSMiddleware
 # 动态加载中文字体，确保在 Vercel 或 Serverless 环境中渲染不出错
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(BASE_DIR, "fonts", "NotoSansSC.ttf")
+IMAGE_CACHE_DIR = Path(os.getenv("IMAGE_CACHE_DIR", "/tmp/dmind-api-images"))
+MAX_BASE64_BYTES = int(os.getenv("MAX_IMAGE_BASE64_BYTES", str(2 * 1024 * 1024)))
+DEFAULT_DPI = int(os.getenv("MINDMAP_DPI", "120"))
+MAX_FIGURE_HEIGHT = float(os.getenv("MINDMAP_MAX_FIGURE_HEIGHT", "80"))
+MAX_NODES = int(os.getenv("MINDMAP_MAX_NODES", "120"))
+MAX_NODE_TEXT_CHARS = int(os.getenv("MINDMAP_MAX_NODE_TEXT_CHARS", "80"))
 
 if os.path.exists(FONT_PATH):
     font_manager.fontManager.addfont(FONT_PATH)
@@ -53,8 +60,8 @@ class MindmapRequest(BaseModel):
         description="输出图片格式，支持 jpeg、jpg、jepg、png；默认 jpeg",
     )
     include_image_base64: bool = Field(
-        True,
-        description="为 true 时在 image_base64 中返回 data:image/jpeg 或 data:image/png 的 Data URI，便于 Coze 工作流直接作为图片文件使用；为 false 时该字段为空字符串以减小响应体",
+        False,
+        description="为 true 且图片未超过 MAX_IMAGE_BASE64_BYTES 时，在 image_base64 中返回 Data URI；默认 false 以避免长图 JSON 过大导致 504",
     )
 
 class DataStruct(BaseModel):
@@ -161,9 +168,27 @@ def _image_media_type(image_format: str) -> str:
     return "image/jpeg" if image_format == "jpeg" else "image/png"
 
 
+def _image_extension(image_format: str) -> str:
+    return "jpeg" if image_format == "jpeg" else "png"
+
+
 def _data_uri_for_bytes(image_format: str, raw: bytes) -> str:
     mime = "image/jpeg" if image_format == "jpeg" else "image/png"
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _image_cache_path(image_id: str, image_format: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "", image_id)
+    if not safe_id:
+        raise ValueError("无效的图片 ID")
+    return IMAGE_CACHE_DIR / f"{safe_id}.{_image_extension(image_format)}"
+
+
+def _save_image(raw: bytes, image_format: str, image_id: str) -> Path:
+    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _image_cache_path(image_id, image_format)
+    path.write_bytes(raw)
+    return path
 
 
 def _build_data_markdown(pic: str, jump_link: str) -> str:
@@ -179,7 +204,14 @@ def _build_data_markdown(pic: str, jump_link: str) -> str:
         lines.extend(["", "以下为根据你的内容自动生成的思维导图图片。"])
     return "\n".join(lines) + "\n"
 
+def _clip_node_text(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) <= MAX_NODE_TEXT_CHARS:
+        return text
+    return text[:MAX_NODE_TEXT_CHARS].rstrip() + "..."
+
 def wrap_text(text, limit=18):
+    text = _clip_node_text(text)
     if len(text) <= limit: return text
     parts = []
     while len(text) > limit:
@@ -195,11 +227,16 @@ def wrap_text(text, limit=18):
 def parse_markdown(md_text):
     lines = md_text.strip().split('\n')
     nodes = []
+    skipped = 0
     for line in lines:
         if not line.strip(): continue
         heading_match = re.match(r'^(#+)\s+(.*)', line)
         if heading_match:
-            nodes.append({"level": len(heading_match.group(1)) - 1, "text": heading_match.group(2).strip()})
+            if len(nodes) < MAX_NODES:
+                text = _clip_node_text(heading_match.group(2))
+                nodes.append({"level": len(heading_match.group(1)) - 1, "text": text})
+            else:
+                skipped += 1
             
     root = {"text": "Root", "children": []}
     stack = [(-1, root)]
@@ -209,7 +246,15 @@ def parse_markdown(md_text):
         while stack and stack[-1][0] >= level: stack.pop()
         stack[-1][1]["children"].append(new_node)
         stack.append((level, new_node))
-    return root["children"][0] if len(root["children"]) >= 1 else root
+    result = root["children"][0] if len(root["children"]) >= 1 else root
+    if skipped:
+        result.setdefault("children", []).append({
+            "text": f"其余 {skipped} 个节点已省略，请缩短内容或分批生成",
+            "wrapped_text": wrap_text(f"其余 {skipped} 个节点已省略，请缩短内容或分批生成"),
+            "children": [],
+            "level": result.get("level", 0) + 1,
+        })
+    return result
 
 def layout_tree(node, parent_x=0, current_y=0):
     lines = node.get("wrapped_text", node["text"]).split('\n')
@@ -280,7 +325,8 @@ def generate_image_buf(md_text, image_format="jpeg"):
     root_node, total_height = layout_tree(root_node, parent_x=0)
     set_colors(root_node)
     
-    fig, ax = plt.subplots(figsize=(18, max(10, total_height * 0.7)))
+    fig_height = min(max(10, total_height * 0.7), MAX_FIGURE_HEIGHT)
+    fig, ax = plt.subplots(figsize=(18, fig_height))
     fig.patch.set_facecolor('#F2F2F2')
     ax.set_facecolor('#F2F2F2')
     draw_tree(ax, root_node)
@@ -298,7 +344,7 @@ def generate_image_buf(md_text, image_format="jpeg"):
     plt.tight_layout()
     
     buf = io.BytesIO()
-    plt.savefig(buf, format=image_format, dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.savefig(buf, format=image_format, dpi=DEFAULT_DPI, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -321,6 +367,22 @@ def render_mindmap(markdown: str, image_format: str = "jpeg"):
 def render_mindmap_with_format(image_format: str, markdown: str):
     return _render_image_response(markdown, image_format)
 
+@app.get("/image/{image_name}")
+def get_cached_image(image_name: str):
+    try:
+        m = re.fullmatch(r"([A-Za-z0-9_-]+)\.(jpeg|jpg|jepg|png)", image_name)
+        if not m:
+            raise HTTPException(status_code=404, detail="图片不存在")
+        image_id, image_format = m.group(1), _normalize_image_format(m.group(2))
+        path = _image_cache_path(image_id, image_format)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="图片已过期或不存在")
+        return FileResponse(path, media_type=_image_media_type(image_format))
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/generate", response_model=MindmapPluginResponse)
 def generate_mindmap(req: MindmapRequest):
     try:
@@ -328,17 +390,21 @@ def generate_mindmap(req: MindmapRequest):
         image_format = _normalize_image_format(req.image_format)
         buf = generate_image_buf(markdown_text, image_format)
         raw = buf.read()
-        image_base64 = _data_uri_for_bytes(image_format, raw) if req.include_image_base64 else ""
-        encoded_markdown = urllib.parse.quote(markdown_text)
+        image_base64 = ""
+        if req.include_image_base64 and len(raw) <= MAX_BASE64_BYTES:
+            image_base64 = _data_uri_for_bytes(image_format, raw)
         base = _public_base_url()
-        pic = f"{base}/render.{image_format}?markdown={encoded_markdown}"
+        log_id = _make_log_id()
+        image_id = uuid.uuid4().hex
+        _save_image(raw, image_format, image_id)
+        pic = f"{base}/image/{image_id}.{_image_extension(image_format)}"
         jump = (req.jump_link or _env_jump_link() or "").strip()
         data = _build_data_markdown(pic, jump)
         return MindmapPluginResponse(
             code=0,
             data=data,
             data_struct=DataStruct(jump_link=jump, pic=pic),
-            log_id=_make_log_id(),
+            log_id=log_id,
             msg="success",
             status_code=0,
             type_for_model=2,

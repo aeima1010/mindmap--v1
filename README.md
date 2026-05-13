@@ -27,21 +27,28 @@ Vercel 对 Python FastAPI 的 Serverless 部署支持最好。
 1. **创建插件**：在 Coze 工作台中，选择“创建插件” -> “基于 OpenAPI 创建”。
 2. **导入 Schema**：将本目录下的 `openapi.yaml` 文件的内容复制粘贴到配置框中。
 3. **配置服务器 URL**：将 `openapi.yaml` 中 `servers` 下的 url 替换为你部署成功后的真实 URL（例如 `https://dmind-api.vercel.app`）。
-4. **测试调用**：验证返回含 `image_base64`（默认即 JPEG 的 Data URI，便于工作流接文件）、`data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`，以及兼容字段 `image_url`、`message`。
+4. **测试调用**：验证返回含 `data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`，以及兼容字段 `image_url`、`message`、`image_base64`。
 5. **Prompt 设定**：在 Coze Bot 的提示词中，告知 AI（火山引擎）：
-   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。工作流需要图片文件时，使用响应里的 `image_base64`（默认即为 JPEG 的 Data URI）；展示用可直接输出 `data` 字段；外链图片用 `data_struct.pic` 或 `image_url`。”*
+   *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。展示用可直接输出 `data` 字段；外链图片用 `data_struct.pic` 或 `image_url`。不要把长图强制转成 Base64。”*
 
 ## 图片输出方式
 - Coze 插件底层调用 `/generate`，响应为 JSON。
-- **工作流里要「直接输出 JPEG 文件」**：保持默认即可——`image_format` 默认为 `jpeg`，`include_image_base64` 默认为 `true`，响应里的 **`image_base64`** 为 `data:image/jpeg;base64,...`，可接到工作流的图片/文件节点；同时仍有 **`data_struct.pic` / `image_url`** 供外链展示。
-- 若只想要 URL、不要大体积 Base64，在请求体中传 **`include_image_base64: false`**。
-- 图片 URL 形如 `/render.jpeg?markdown=...`；请求体里也可传 `image_format: "jepg"`，会归一化为 JPEG。
-- 如需 PNG，传 `image_format: "png"`，此时 `image_base64` 前缀为 `data:image/png;base64,...`。
+- **默认输出 JPEG 图片 URL**：`image_format` 默认为 `jpeg`，响应里的 **`data_struct.pic` / `image_url`** 是短链接，形如 `/image/<id>.jpeg`，不会把整段 Markdown 塞进 URL。
+- **不要默认返回 Base64**：`include_image_base64` 默认为 `false`，避免长图把 JSON 响应体撑大后触发网关 504。
+- 确实需要 Data URI 时，可以传 **`include_image_base64: true`**；若图片超过服务端 `MAX_IMAGE_BASE64_BYTES`，该字段仍会返回空字符串。
+- 请求体里也可传 `image_format: "jepg"`，会归一化为标准 JPEG。
+- 如需 PNG，传 `image_format: "png"`，短链接会变成 `/image/<id>.png`。
 - 旧的 `/render?markdown=...` 入口仍保留，默认返回 `image/jpeg`。
 
 ## 环境变量
 - `PUBLIC_BASE_URL`: 对外可访问的服务地址，用于生成 `data_struct.pic` 图片 URL，默认 `https://dmindmap.zeabur.app`。
 - `MINDMAP_JUMP_LINK`: 默认编辑链接；请求体里的 `jump_link` 优先级更高。未配置时，返回结构仍保留 `data_struct.jump_link`，值为空字符串。
+- `IMAGE_CACHE_DIR`: 图片缓存目录，默认 `/tmp/dmind-api-images`。
+- `MAX_IMAGE_BASE64_BYTES`: 允许返回 Base64 Data URI 的最大图片字节数，默认 2MB。
+- `MINDMAP_DPI`: 渲染 DPI，默认 120，降低长图渲染耗时和体积。
+- `MINDMAP_MAX_FIGURE_HEIGHT`: 最大画布高度（英寸），默认 80，避免超大长图拖垮网关。
+- `MINDMAP_MAX_NODES`: 最大渲染节点数，默认 120；超过后会在图中追加“其余节点已省略”的提示，避免长文本请求超时。
+- `MINDMAP_MAX_NODE_TEXT_CHARS`: 单个节点最多保留字符数，默认 80；超出后加省略号，避免单节点长段落拖慢渲染。
 
 ## Coze 试运行里 Response 显示 `{}` 时怎么排查
 

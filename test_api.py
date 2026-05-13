@@ -1,5 +1,4 @@
 import os
-import base64
 from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
@@ -62,12 +61,12 @@ def run():
     assert payload["code"] == 0 and payload["status_code"] == 0 and payload["type_for_model"] == 2
     assert "data_struct" in payload and payload["data_struct"]["jump_link"] == "https://example.com/edit-demo"
     assert "[编辑](https://example.com/edit-demo)" in payload["data"]
-    assert payload["image_base64"].startswith("data:image/jpeg;base64,")
-    b64part = payload["image_base64"].split(",", 1)[1]
-    assert base64.b64decode(b64part)[:2] == b"\xff\xd8"
+    assert payload["image_base64"] == ""
     pic = payload["data_struct"]["pic"]
     parsed = urlparse(pic)
-    assert parsed.path.endswith("/render.jpeg")
+    assert parsed.path.startswith("/image/")
+    assert parsed.path.endswith(".jpeg")
+    assert parsed.query == ""
     img = client.get(f"{parsed.path}?{parsed.query}")
     assert img.status_code == 200 and img.headers.get("content-type", "").startswith("image/")
     assert img.headers.get("content-type", "").startswith("image/jpeg")
@@ -84,7 +83,8 @@ def run():
     jpeg_payload = jpeg_res.json()
     jpeg_pic = jpeg_payload["data_struct"]["pic"]
     jpeg_parsed = urlparse(jpeg_pic)
-    assert jpeg_parsed.path.endswith("/render.jpeg")
+    assert jpeg_parsed.path.startswith("/image/")
+    assert jpeg_parsed.path.endswith(".jpeg")
     jpeg_img = client.get(f"{jpeg_parsed.path}?{jpeg_parsed.query}")
     assert jpeg_img.status_code == 200
     assert jpeg_img.headers.get("content-type", "").startswith("image/jpeg")
@@ -101,7 +101,8 @@ def run():
     png_payload = png_res.json()
     png_pic = png_payload["data_struct"]["pic"]
     png_parsed = urlparse(png_pic)
-    assert png_parsed.path.endswith("/render.png")
+    assert png_parsed.path.startswith("/image/")
+    assert png_parsed.path.endswith(".png")
     png_img = client.get(f"{png_parsed.path}?{png_parsed.query}")
     assert png_img.status_code == 200
     assert png_img.headers.get("content-type", "").startswith("image/png")
@@ -126,11 +127,58 @@ def run():
     assert no_b64_res.status_code == 200
     assert no_b64_res.json()["image_base64"] == ""
 
+    with_b64_res = client.post(
+        "/generate",
+        json={
+            "markdown_text": "# 根\n## 子",
+            "include_image_base64": True,
+        },
+    )
+    assert with_b64_res.status_code == 200
+    assert with_b64_res.json()["image_base64"].startswith("data:image/jpeg;base64,")
+
+    long_markdown = "# 长文本测试\n" + "\n".join(
+        f"## 第 {i} 个节点\n### 说明 {i} " + "长内容" * 20
+        for i in range(1, 250)
+    )
+    long_res = client.post(
+        "/generate",
+        json={
+            "markdown_text": long_markdown,
+        },
+    )
+    assert long_res.status_code == 200
+    long_payload = long_res.json()
+    long_pic = long_payload["data_struct"]["pic"]
+    long_parsed = urlparse(long_pic)
+    assert long_payload["image_base64"] == ""
+    assert long_parsed.path.startswith("/image/")
+    assert long_parsed.path.endswith(".jpeg")
+    assert long_parsed.query == ""
+    assert len(long_pic) < 120
+    long_img = client.get(long_parsed.path)
+    assert long_img.status_code == 200
+    assert long_img.headers.get("content-type", "").startswith("image/jpeg")
+    assert long_img.content.startswith(b"\xff\xd8")
+
+    huge_node_res = client.post(
+        "/generate",
+        json={
+            "markdown_text": "# 根\n## " + "单节点超长内容" * 500,
+        },
+    )
+    assert huge_node_res.status_code == 200
+    huge_node_payload = huge_node_res.json()
+    huge_node_pic = huge_node_payload["data_struct"]["pic"]
+    huge_node_parsed = urlparse(huge_node_pic)
+    assert huge_node_parsed.path.startswith("/image/")
+    assert huge_node_parsed.query == ""
+
     # 直接调用路由函数
     req = MindmapRequest(markdown_text=markdown_data, jump_link="https://example.com/edit-demo", image_format="jepg")
     res = generate_mindmap(req)
     assert res.code == 0 and res.status_code == 0 and res.type_for_model == 2
-    assert res.data_struct.pic and "render.jpeg?markdown=" in res.data_struct.pic
+    assert res.data_struct.pic and "/image/" in res.data_struct.pic and res.data_struct.pic.endswith(".jpeg")
 
     out_path = "api_output.jpeg"
     p2 = urlparse(res.data_struct.pic)
