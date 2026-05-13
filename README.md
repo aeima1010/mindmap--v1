@@ -27,13 +27,14 @@ Vercel 对 Python FastAPI 的 Serverless 部署支持最好。
 1. **创建插件**：在 Coze 工作台中，选择“创建插件” -> “基于 OpenAPI 创建”。
 2. **导入 Schema**：将本目录下的 `openapi.yaml` 文件的内容复制粘贴到配置框中。
 3. **配置服务器 URL**：将 `openapi.yaml` 中 `servers` 下的 url 替换为你部署成功后的真实 URL（例如 `https://dmind-api.vercel.app`）。
-4. **测试调用**：验证返回含 `data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`，以及兼容字段 `image_url`、`message`、`image_base64`。
+4. **测试调用**：验证返回含 `data`、`data_struct`、`log_id`、`msg`、`status_code`、`type_for_model`，以及兼容字段 `image`、`image_url`、`message`、`image_base64`。
 5. **Prompt 设定**：在 Coze Bot 的提示词中，告知 AI（火山引擎）：
    *“当你被要求生成思维导图时，请先整理出 Markdown 层级文本，然后调用 GenerateMindmap 插件。展示用可直接输出 `data` 字段；外链图片用 `data_struct.pic` 或 `image_url`。不要把长图强制转成 Base64。”*
 
 ## 图片输出方式
 - Coze 插件底层调用 `/generate`，响应为 JSON。
 - **默认输出 JPEG 图片 URL**：`image_format` 默认为 `jpeg`，响应里的 **`data_struct.pic` / `image_url`** 是短链接，形如 `/image/<id>.jpeg`，不会把整段 Markdown 塞进 URL。
+- 前端若固定读取 `image` 字段，可直接映射根字段 **`image`**；它与 `data_struct.pic`、`image_url` 完全相同。
 - **不要默认返回 Base64**：`include_image_base64` 默认为 `false`，避免长图把 JSON 响应体撑大后触发网关 504。
 - 确实需要 Data URI 时，可以传 **`include_image_base64: true`**；若图片超过服务端 `MAX_IMAGE_BASE64_BYTES`，该字段仍会返回空字符串。
 - 请求体里也可传 `image_format: "jepg"`，会归一化为标准 JPEG。

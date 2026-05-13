@@ -92,6 +92,9 @@ paths:
                     type: integer
                     description: 模型侧类型标识
                     example: 2
+                  image:
+                    type: string
+                    description: 与 data_struct.pic 相同；前端若直接读取 image 字段，可映射此项作为 JPEG/PNG 文件 URL。
                   image_url:
                     type: string
                     description: 与 data_struct.pic 相同；若 Coze 仍绑定旧字段名 image_url，请映射此项。

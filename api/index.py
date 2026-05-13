@@ -78,6 +78,7 @@ class MindmapPluginResponse(BaseModel):
     status_code: int = 0
     type_for_model: int = 2
     # 兼容早期仅映射下列根字段的 Coze 工具配置（与 data_struct.pic / msg 同源）
+    image: str = Field("", description="与 data_struct.pic 相同；给前端直接取 image 字段作为 JPEG/PNG 文件 URL")
     image_url: str = Field("", description="与 data_struct.pic 相同，便于旧输出映射")
     message: str = Field("", description="与 msg 相同，便于旧输出映射（旧版常用字段名 message）")
     image_base64: str = Field(
@@ -408,6 +409,7 @@ def generate_mindmap(req: MindmapRequest):
             msg="success",
             status_code=0,
             type_for_model=2,
+            image=pic,
             image_url=pic,
             message="success",
             image_base64=image_base64,

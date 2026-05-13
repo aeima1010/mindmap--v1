@@ -63,6 +63,8 @@ def run():
     assert "[编辑](https://example.com/edit-demo)" in payload["data"]
     assert payload["image_base64"] == ""
     pic = payload["data_struct"]["pic"]
+    assert payload["image"] == pic
+    assert payload["image_url"] == pic
     parsed = urlparse(pic)
     assert parsed.path.startswith("/image/")
     assert parsed.path.endswith(".jpeg")
