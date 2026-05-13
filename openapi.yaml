@@ -58,6 +58,10 @@ paths:
                   - msg
                   - status_code
                   - type_for_model
+                  - image
+                  - image_url
+                  - message
+                  - image_base64
                 properties:
                   code:
                     type: integer
