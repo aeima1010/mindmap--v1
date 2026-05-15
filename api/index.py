@@ -100,10 +100,21 @@ def _env_jump_link() -> str:
 def _unwrap_markdown_text(text: str) -> str:
     """若上游误把整段 JSON 放进 markdown_text（如 Coze/LLM 输出 {\"image\": \"# ...\"}），取出内层 Markdown。"""
     text = (text or "").strip()
+    if not text:
+        return text
+    if text.startswith('"') and text.endswith('"'):
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, str):
+                return decoded.strip()
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return _unescape_json_string_fragment(text[1:-1]).strip()
     if not text.startswith("{"):
         return text
     try:
         obj = json.loads(text)
+        if isinstance(obj, str):
+            return obj.strip()
         if isinstance(obj, dict):
             for key in ("image", "markdown", "markdown_text", "content", "mindmap_md"):
                 v = obj.get(key)
@@ -229,13 +240,29 @@ def parse_markdown(md_text):
     lines = md_text.strip().split('\n')
     nodes = []
     skipped = 0
+    current_heading_level = 0
     for line in lines:
-        if not line.strip(): continue
-        heading_match = re.match(r'^(#+)\s+(.*)', line)
+        stripped = line.strip()
+        if not stripped or set(stripped) <= {"-"}:
+            continue
+        heading_match = re.match(r'^(#+)\s+(.*)', stripped)
+        bullet_match = re.match(r'^(\s*)([-*+]|\d+[.)])\s+(.*)', line)
+        text = ""
+        level = current_heading_level + 1
         if heading_match:
+            level = len(heading_match.group(1)) - 1
+            text = heading_match.group(2)
+            current_heading_level = level
+        elif bullet_match:
+            indent = len(bullet_match.group(1).replace("\t", "    "))
+            level = current_heading_level + 1 + min(indent // 2, 3)
+            text = bullet_match.group(3)
+        else:
+            text = stripped
+
+        if text:
             if len(nodes) < MAX_NODES:
-                text = _clip_node_text(heading_match.group(2))
-                nodes.append({"level": len(heading_match.group(1)) - 1, "text": text})
+                nodes.append({"level": level, "text": _clip_node_text(text)})
             else:
                 skipped += 1
             
@@ -247,7 +274,12 @@ def parse_markdown(md_text):
         while stack and stack[-1][0] >= level: stack.pop()
         stack[-1][1]["children"].append(new_node)
         stack.append((level, new_node))
-    result = root["children"][0] if len(root["children"]) >= 1 else root
+    if len(root["children"]) == 1:
+        result = root["children"][0]
+    elif len(root["children"]) > 1:
+        result = {"text": "思维导图", "wrapped_text": wrap_text("思维导图"), "children": root["children"], "level": 0}
+    else:
+        result = root
     if skipped:
         result.setdefault("children", []).append({
             "text": f"其余 {skipped} 个节点已省略，请缩短内容或分批生成",

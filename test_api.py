@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
 
-from api.index import app, generate_mindmap, MindmapRequest
+from api.index import app, generate_mindmap, MindmapRequest, parse_markdown, _unwrap_markdown_text
 
 markdown_data = """# 深圳证券交易所首次公开发行证券发行与承销细则 · 第一章 总则
 ## 第一条 制定目的与依据
@@ -175,6 +175,44 @@ def run():
     huge_node_parsed = urlparse(huge_node_pic)
     assert huge_node_parsed.path.startswith("/image/")
     assert huge_node_parsed.query == ""
+
+    compliance_markdown = """### 核心合规结论
+A股各板块关联交易豁免情形分为三大类。
+
+---
+### 一、豁免按照关联交易方式履行审议和披露义务的情形
+#### 1. 上交所主板
+- 上市公司单方面获得利益且不支付对价、不附任何义务的交易；
+- 关联人向上市公司提供资金，利率水平不高于贷款市场报价利率；
+
+### 二、豁免提交股东会审议的情形
+#### 1. 科创板
+- 所有出资方均全部以现金出资；
+- 按照出资额比例确定各方股权比例。
+"""
+    quoted_markdown = '"' + compliance_markdown.replace('"', '\\"') + '"'
+    unwrapped = _unwrap_markdown_text(quoted_markdown)
+    parsed_tree = parse_markdown(unwrapped)
+    assert parsed_tree["text"] == "思维导图"
+    assert len(parsed_tree["children"]) >= 3
+    assert any("单方面获得利益" in child["text"] for child in parsed_tree["children"][1]["children"][0]["children"])
+
+    compliance_res = client.post(
+        "/generate",
+        json={
+            "markdown_text": quoted_markdown,
+        },
+    )
+    assert compliance_res.status_code == 200
+    compliance_payload = compliance_res.json()
+    compliance_pic = compliance_payload["data_struct"]["pic"]
+    compliance_parsed = urlparse(compliance_pic)
+    assert compliance_parsed.path.startswith("/image/")
+    assert compliance_parsed.path.endswith(".jpeg")
+    assert compliance_parsed.query == ""
+    compliance_img = client.get(compliance_parsed.path)
+    assert compliance_img.status_code == 200
+    assert compliance_img.content.startswith(b"\xff\xd8")
 
     # 直接调用路由函数
     req = MindmapRequest(markdown_text=markdown_data, jump_link="https://example.com/edit-demo", image_format="jepg")
